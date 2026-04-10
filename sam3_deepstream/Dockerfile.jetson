@@ -84,6 +84,8 @@ ENV SAM3_CHECKPOINT=/workspace/checkpoints/sam3.pt
 ENV CUDA_DEVICE=0
 ENV HOST=0.0.0.0
 ENV PORT=8000
+ENV SAM3_USE_AUTOCAST=1
+ENV SAM3_AUTOCAST_DTYPE=float16
 
 # PE (Perception Encoder) configuration
 # Set SAM3_USE_PE_BACKBONE=1 to use PE-enhanced backbone

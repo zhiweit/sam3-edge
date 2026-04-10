@@ -318,17 +318,17 @@ if [ "$DOCKER_ONLY" = false ]; then
         exit 1
     fi
 
-    # Install UV package manager
-    print_header "Installing UV Package Manager"
+    # # Install UV package manager
+    # print_header "Installing UV Package Manager"
 
-    if command -v uv &> /dev/null; then
-        print_success "UV already installed: $(uv --version)"
-    else
-        print_info "Installing UV..."
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="$HOME/.cargo/bin:$PATH"
-        print_success "UV installed"
-    fi
+    # if command -v uv &> /dev/null; then
+    #     print_success "UV already installed: $(uv --version)"
+    # else
+    #     print_info "Installing UV..."
+    #     curl -LsSf https://astral.sh/uv/install.sh | sh
+    #     export PATH="$HOME/.cargo/bin:$PATH"
+    #     print_success "UV installed"
+    # fi
 
     # Install Python dependencies
     print_header "Installing Python Dependencies"
@@ -389,10 +389,10 @@ if [ "$DOCKER_ONLY" = false ]; then
     # Use system-site-packages to inherit Jetson's PyTorch with CUDA
     uv venv --system-site-packages --clear
 
-    print_info "Syncing workspace dependencies..."
-    # Skip torch/torchvision/triton - Jetson uses NVIDIA's pre-built PyTorch from JetPack
-    uv sync --package sam3-deepstream --no-install-package torch --no-install-package torchvision --no-install-package triton
-    print_success "Python dependencies installed"
+    # print_info "Syncing workspace dependencies..."
+    # # Skip torch/torchvision/triton - Jetson uses NVIDIA's pre-built PyTorch from JetPack
+    # uv sync --package sam3-deepstream --no-install-package torch --no-install-package torchvision --no-install-package triton
+    # print_success "Python dependencies installed"
 
     # Create directories for database and engines
     print_header "Preparing Directories"

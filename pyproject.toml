@@ -8,7 +8,14 @@ dependencies = []
 [tool.uv.workspace]
 members = ["sam3_deepstream"]
 
+[[tool.uv.index]]
+name = "jetson"
+url = "https://pypi.jetson-ai-lab.io/jp6/cu126"
+explicit = true
+
 [tool.uv.sources]
 # sam3 from local directory (includes trt_export.py for TensorRT support)
 sam3 = { path = "./sam3", editable = true }
 sam3-deepstream = { workspace = true }
+torch = { index = "jetson" }
+torchvision = { index = "jetson" }

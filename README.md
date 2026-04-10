@@ -89,6 +89,29 @@ curl -X POST http://localhost:8000/segment \
   -F "points=0.5,0.5,1"
 ```
 
+## Development
+- Install uv as dependency manager
+- Create virtual environment
+```sh
+uv venv --system-site-packages --python python3.10 # use system python
+```
+- Activate the virtual environment
+```sh
+source .venv/bin/activate
+```
+
+- Installing `torch` and `torchvision` from the jetson pypi repository
+```sh
+uv pip install --no-cache-dir torch --index-url=https://pypi.jetson-ai-lab.io/jp6/cu126
+uv pip install --no-cache-dir torchvision --index-url=https://pypi.jetson-ai-lab.io/jp6/cu126
+```
+
+- Install the remaining dependencies
+```sh
+uv sync --package sam3-deepstream --no-install-package torch --no-install-package torchvision --no-install-package triton
+```
+
+
 ## Configuration
 
 Environment variables:

@@ -12,7 +12,7 @@ import json
 import logging
 import os
 import time
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -24,8 +24,7 @@ from pydantic import BaseModel, Field
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
 
@@ -42,8 +41,10 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 # Pydantic Models
 # ============================================================================
 
+
 class HealthResponse(BaseModel):
     """Health check response."""
+
     status: str
     model_loaded: bool
     uptime_seconds: float
@@ -57,6 +58,7 @@ class HealthResponse(BaseModel):
 
 class InferenceStats(BaseModel):
     """Inference statistics."""
+
     total_requests: int
     text_requests: int
     point_requests: int
@@ -66,25 +68,34 @@ class InferenceStats(BaseModel):
 
 class DetectionResult(BaseModel):
     """Single detection result."""
+
     bbox: List[float] = Field(..., description="[x1, y1, x2, y2] in pixels")
     score: float
     mask_area: int
-    mask_rle: Optional[dict] = Field(None, description="RLE-encoded mask {counts: str, size: [h, w]}")
+    mask_rle: Optional[dict] = Field(
+        None, description="RLE-encoded mask {counts: str, size: [h, w]}"
+    )
 
 
 class SegmentResponse(BaseModel):
     """Response from segmentation."""
+
     success: bool
     inference_time_ms: float
     num_detections: int
     detections: List[DetectionResult]
-    output_image_path: Optional[str] = Field(None, description="Path to saved PNG overlay")
-    output_json_path: Optional[str] = Field(None, description="Path to saved JSON results")
+    output_image_path: Optional[str] = Field(
+        None, description="Path to saved PNG overlay"
+    )
+    output_json_path: Optional[str] = Field(
+        None, description="Path to saved JSON results"
+    )
 
 
 # ============================================================================
 # SAM3 Runtime (Native Text Support)
 # ============================================================================
+
 
 class SAM3Runtime:
     """
@@ -117,24 +128,63 @@ class SAM3Runtime:
 
         # Check PE configuration from environment
         if use_pe_backbone is None:
-            use_pe_backbone = os.environ.get('SAM3_USE_PE_BACKBONE', '0') == '1'
+            use_pe_backbone = os.environ.get("SAM3_USE_PE_BACKBONE", "0") == "1"
         self.use_pe_backbone = use_pe_backbone
-        self.use_alignment_tuning = os.environ.get('SAM3_ALIGNMENT_TUNING', '1') == '1'
+        self.use_alignment_tuning = os.environ.get("SAM3_ALIGNMENT_TUNING", "1") == "1"
 
         # TensorRT configuration (for future acceleration)
-        self.use_trt = os.environ.get('SAM3_USE_TRT', '0') == '1'
-        self.engine_dir = Path(os.environ.get('SAM3_ENGINE_DIR', './engines'))
+        self.use_trt = os.environ.get("SAM3_USE_TRT", "0") == "1"
+        self.engine_dir = Path(os.environ.get("SAM3_ENGINE_DIR", "./engines"))
+
+        # Mixed precision config. Using autocast ensures matmul operands share
+        # the same dtype in the text grounding path.
+        self.use_autocast = os.environ.get("SAM3_USE_AUTOCAST", "1") == "1"
+        self.autocast_dtype = os.environ.get("SAM3_AUTOCAST_DTYPE", "auto").lower()
 
         # Stats
         self.stats = {
-            'total_requests': 0,
-            'text_requests': 0,
-            'point_requests': 0,
-            'inference_times': [],
-            'errors': 0,
-            'backbone_type': 'PE' if self.use_pe_backbone else 'ViT',
-            'trt_enabled': False,
+            "total_requests": 0,
+            "text_requests": 0,
+            "point_requests": 0,
+            "inference_times": [],
+            "errors": 0,
+            "backbone_type": "PE" if self.use_pe_backbone else "ViT",
+            "trt_enabled": False,
         }
+
+    def _get_inference_context(self):
+        """Return autocast context for consistent inference dtypes."""
+        import torch
+
+        if (
+            self.device != "cuda"
+            or not torch.cuda.is_available()
+            or not self.use_autocast
+        ):
+            return nullcontext()
+
+        if self.autocast_dtype == "float16":
+            dtype = torch.float16
+        elif self.autocast_dtype == "bfloat16":
+            dtype = torch.bfloat16
+        else:
+            # Prefer float16 by default for wider CUDA runtime compatibility
+            # (including Jetson stacks where bfloat16 can be partially unsupported).
+            dtype = torch.float16
+
+        return torch.autocast(device_type="cuda", dtype=dtype)
+
+    @staticmethod
+    def _to_numpy_safe(value):
+        """Convert tensors to numpy with dtype normalization for BF16 safety."""
+        import torch
+
+        if not torch.is_tensor(value):
+            return value
+        # NumPy/CV stacks often do not support bfloat16 directly.
+        if value.dtype in (torch.bfloat16, torch.float16):
+            value = value.float()
+        return value.detach().cpu().numpy()
 
     def load_model(self):
         """Load SAM3 model with native text encoder or PE backbone."""
@@ -151,7 +201,9 @@ class SAM3Runtime:
                 # Load PE-enhanced model
                 from sam3.model_builder import build_sam3_pe_model
 
-                logger.info(f"Loading SAM3 with PE backbone from {self.checkpoint_path}...")
+                logger.info(
+                    f"Loading SAM3 with PE backbone from {self.checkpoint_path}..."
+                )
                 logger.info(f"Alignment tuning: {self.use_alignment_tuning}")
 
                 self.model = build_sam3_pe_model(
@@ -179,7 +231,7 @@ class SAM3Runtime:
                 self.model,
                 resolution=self.resolution,
                 device=self.device,
-                confidence_threshold=0.5
+                confidence_threshold=0.5,
             )
 
             # Optionally swap the ViT trunk for a TensorRT engine so the
@@ -201,7 +253,7 @@ class SAM3Runtime:
                         )
                     vit_neck.trunk = adapter
                     self.trt_runtime = adapter
-                    self.stats['trt_enabled'] = True
+                    self.stats["trt_enabled"] = True
                     logger.info(
                         f"TRT trunk swap active: engine={encoder_path}, "
                         f"input={adapter.input_shape}, output={adapter.output_shape}"
@@ -215,7 +267,7 @@ class SAM3Runtime:
 
         except Exception as e:
             logger.error(f"Failed to load SAM3 model: {e}")
-            self.stats['errors'] += 1
+            self.stats["errors"] += 1
             return False
 
     def _engines_exist(self) -> bool:
@@ -240,8 +292,8 @@ class SAM3Runtime:
         if self.processor is None:
             raise RuntimeError("Model not loaded")
 
-        self.stats['total_requests'] += 1
-        self.stats['text_requests'] += 1
+        self.stats["total_requests"] += 1
+        self.stats["text_requests"] += 1
         start = time.perf_counter()
 
         try:
@@ -249,33 +301,34 @@ class SAM3Runtime:
             pil_image = Image.fromarray(image)
 
             # SAM3 native text processing
-            state = self.processor.set_image(pil_image)
-            state = self.processor.set_text_prompt(text_prompt, state)
+            with self._get_inference_context():
+                state = self.processor.set_image(pil_image)
+                state = self.processor.set_text_prompt(text_prompt, state)
 
             elapsed_ms = (time.perf_counter() - start) * 1000
-            self.stats['inference_times'].append(elapsed_ms)
+            self.stats["inference_times"].append(elapsed_ms)
 
             # Extract results
-            masks = state.get("masks", torch.zeros(0, 1, image.shape[0], image.shape[1]))
+            masks = state.get(
+                "masks", torch.zeros(0, 1, image.shape[0], image.shape[1])
+            )
             boxes = state.get("boxes", torch.zeros(0, 4))
             scores = state.get("scores", torch.zeros(0))
 
             return {
-                "masks": masks.cpu().numpy() if torch.is_tensor(masks) else masks,
-                "boxes": boxes.cpu().numpy() if torch.is_tensor(boxes) else boxes,
-                "scores": scores.cpu().numpy() if torch.is_tensor(scores) else scores,
+                "masks": self._to_numpy_safe(masks),
+                "boxes": self._to_numpy_safe(boxes),
+                "scores": self._to_numpy_safe(scores),
                 "inference_time_ms": elapsed_ms,
             }
 
         except Exception as e:
-            self.stats['errors'] += 1
+            self.stats["errors"] += 1
             logger.error(f"Segmentation error: {e}")
             raise
 
     def segment_with_point(
-        self,
-        image: np.ndarray,
-        points: List[Tuple[float, float, int]]
+        self, image: np.ndarray, points: List[Tuple[float, float, int]]
     ) -> Dict:
         """
         Segment image using point prompts.
@@ -293,59 +346,61 @@ class SAM3Runtime:
         if self.processor is None:
             raise RuntimeError("Model not loaded")
 
-        self.stats['total_requests'] += 1
-        self.stats['point_requests'] += 1
+        self.stats["total_requests"] += 1
+        self.stats["point_requests"] += 1
         start = time.perf_counter()
 
         try:
             pil_image = Image.fromarray(image)
             h, w = image.shape[:2]
 
-            # Set image first
-            state = self.processor.set_image(pil_image)
+            with self._get_inference_context():
+                # Set image first
+                state = self.processor.set_image(pil_image)
 
-            # Add points as box prompts (point → small box)
-            # SAM3 uses center_x, center_y, width, height format (normalized 0-1)
-            for x, y, label in points:
-                # Convert point to small box (5% of image size)
-                box_size = 0.05
-                box = [x, y, box_size, box_size]  # cx, cy, w, h
-                state = self.processor.add_geometric_prompt(box, label == 1, state)
+                # Add points as box prompts (point -> small box)
+                # SAM3 uses center_x, center_y, width, height format (normalized 0-1)
+                for x, y, label in points:
+                    # Convert point to small box (5% of image size)
+                    box_size = 0.05
+                    box = [x, y, box_size, box_size]  # cx, cy, w, h
+                    state = self.processor.add_geometric_prompt(box, label == 1, state)
 
             elapsed_ms = (time.perf_counter() - start) * 1000
-            self.stats['inference_times'].append(elapsed_ms)
+            self.stats["inference_times"].append(elapsed_ms)
 
             masks = state.get("masks", torch.zeros(0, 1, h, w))
             boxes = state.get("boxes", torch.zeros(0, 4))
             scores = state.get("scores", torch.zeros(0))
 
             return {
-                "masks": masks.cpu().numpy() if torch.is_tensor(masks) else masks,
-                "boxes": boxes.cpu().numpy() if torch.is_tensor(boxes) else boxes,
-                "scores": scores.cpu().numpy() if torch.is_tensor(scores) else scores,
+                "masks": self._to_numpy_safe(masks),
+                "boxes": self._to_numpy_safe(boxes),
+                "scores": self._to_numpy_safe(scores),
                 "inference_time_ms": elapsed_ms,
             }
 
         except Exception as e:
-            self.stats['errors'] += 1
+            self.stats["errors"] += 1
             logger.error(f"Point segmentation error: {e}")
             raise
 
     def get_stats(self) -> Dict:
         """Get inference statistics."""
-        times = self.stats['inference_times'][-100:]
+        times = self.stats["inference_times"][-100:]
         return {
-            'total_requests': self.stats['total_requests'],
-            'text_requests': self.stats['text_requests'],
-            'point_requests': self.stats['point_requests'],
-            'avg_inference_time_ms': sum(times) / max(1, len(times)),
-            'errors': self.stats['errors'],
+            "total_requests": self.stats["total_requests"],
+            "text_requests": self.stats["text_requests"],
+            "point_requests": self.stats["point_requests"],
+            "avg_inference_time_ms": sum(times) / max(1, len(times)),
+            "errors": self.stats["errors"],
         }
 
 
 # ============================================================================
 # FastAPI Application
 # ============================================================================
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -357,12 +412,11 @@ async def lifespan(app: FastAPI):
 
     # Get checkpoint path from environment
     checkpoint_path = os.environ.get(
-        'SAM3_CHECKPOINT',
-        '/workspace/checkpoints/sam3.pt'
+        "SAM3_CHECKPOINT", "/workspace/checkpoints/sam3.pt"
     )
     # Use "cuda" for device - SAM3 builder only supports "cuda" or "cpu"
     # For multi-GPU, use CUDA_VISIBLE_DEVICES environment variable
-    device = "cuda" if os.environ.get('CUDA_DEVICE', '0') != '-1' else "cpu"
+    device = "cuda" if os.environ.get("CUDA_DEVICE", "0") != "-1" else "cpu"
 
     # Initialize runtime
     _runtime = SAM3Runtime(checkpoint_path=checkpoint_path, device=device)
@@ -375,7 +429,9 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Could not load model on startup: {e}")
     else:
         logger.warning(f"Checkpoint not found: {checkpoint_path}")
-        logger.info("Server will start in degraded mode. Provide checkpoint to enable inference.")
+        logger.info(
+            "Server will start in degraded mode. Provide checkpoint to enable inference."
+        )
 
     # Create upload directory
     upload_dir = Path("/workspace/uploads")
@@ -385,6 +441,7 @@ async def lifespan(app: FastAPI):
     # Initialize job manager for video processing
     from sam3_deepstream.api.services.job_manager import JobManager
     from sam3_deepstream.config import get_config
+
     config = get_config()
     app.state.config = config
     app.state.job_manager = JobManager(config, inference_service=_runtime)
@@ -394,7 +451,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cleanup job manager
-    if hasattr(app.state, 'job_manager'):
+    if hasattr(app.state, "job_manager"):
         app.state.job_manager.stop()
 
     # Cleanup
@@ -419,12 +476,14 @@ app.add_middleware(
 
 # Register video processing router
 from sam3_deepstream.api.routes import video
+
 app.include_router(video.router)
 
 
 # ============================================================================
 # Endpoints
 # ============================================================================
+
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -436,18 +495,21 @@ async def health_check():
 
     try:
         import torch
+
         if torch.cuda.is_available():
             gpu_available = True
             gpu_name = torch.cuda.get_device_name(0)
             gpu_memory_used = torch.cuda.memory_allocated(0) / 1024 / 1024
-            gpu_memory_total = torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
+            gpu_memory_total = (
+                torch.cuda.get_device_properties(0).total_memory / 1024 / 1024
+            )
     except Exception:
         pass
 
     uptime = time.time() - _startup_time if _startup_time else 0
     model_loaded = _runtime is not None and _runtime.processor is not None
-    backbone_type = _runtime.stats.get('backbone_type', 'unknown') if _runtime else None
-    trt_enabled = _runtime.stats.get('trt_enabled', False) if _runtime else False
+    backbone_type = _runtime.stats.get("backbone_type", "unknown") if _runtime else None
+    trt_enabled = _runtime.stats.get("trt_enabled", False) if _runtime else False
 
     return HealthResponse(
         status="healthy" if model_loaded else "degraded",
@@ -477,7 +539,10 @@ async def segment_with_text(
     file: UploadFile = File(...),
     text_prompt: str = Form(..., description="Text description of object to segment"),
     confidence_threshold: float = Form(0.5, description="Minimum confidence 0-1"),
-    format: str = Query("json", description="Response format: 'json' (default) or 'image' for the rendered PNG overlay"),
+    format: str = Query(
+        "json",
+        description="Response format: 'json' (default) or 'image' for the rendered PNG overlay",
+    ),
 ):
     """
     Segment objects using text prompt (SAM3 native VETextEncoder).
@@ -504,7 +569,7 @@ async def segment_with_text(
 
         # Load image
         image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
         image_np = np.array(image)
         h, w = image_np.shape[:2]
 
@@ -521,7 +586,7 @@ async def segment_with_text(
         scores = result["scores"]
         inference_time = result["inference_time_ms"]
 
-        num_detections = len(scores) if hasattr(scores, '__len__') else 0
+        num_detections = len(scores) if hasattr(scores, "__len__") else 0
 
         # Build detections with RLE-encoded masks
         detections = []
@@ -537,12 +602,14 @@ async def segment_with_text(
                 rle = None
                 mask_area = 0
 
-            detections.append(DetectionResult(
-                bbox=boxes[i].tolist() if i < len(boxes) else [0, 0, 0, 0],
-                score=float(scores[i]) if i < len(scores) else 0.0,
-                mask_area=mask_area,
-                mask_rle=rle,
-            ))
+            detections.append(
+                DetectionResult(
+                    bbox=boxes[i].tolist() if i < len(boxes) else [0, 0, 0, 0],
+                    score=float(scores[i]) if i < len(scores) else 0.0,
+                    mask_area=mask_area,
+                    mask_rle=rle,
+                )
+            )
 
         # Create mask overlay image
         overlay = image_np.copy()
@@ -563,11 +630,20 @@ async def segment_with_text(
             # Draw bounding boxes
             for i in range(min(num_detections, len(boxes))):
                 box = boxes[i].astype(int)
-                cv2.rectangle(overlay, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2)
+                cv2.rectangle(
+                    overlay, (box[0], box[1]), (box[2], box[3]), (0, 255, 0), 2
+                )
                 if i < len(scores):
                     label = f"{text_prompt}: {scores[i]:.2f}"
-                    cv2.putText(overlay, label, (box[0], box[1] - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                    cv2.putText(
+                        overlay,
+                        label,
+                        (box[0], box[1] - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 0),
+                        2,
+                    )
 
         # Generate unique filename
         timestamp = int(time.time() * 1000)
@@ -611,8 +687,12 @@ async def segment_with_text(
 @app.post("/segment")
 async def segment_with_point(
     file: UploadFile = File(...),
-    points: Optional[str] = Query(None, description="Points as 'x1,y1,l1;x2,y2,l2' (coords 0-1)"),
-    boxes: Optional[str] = Query(None, description="Boxes as 'x1,y1,x2,y2;...' (coords 0-1)"),
+    points: Optional[str] = Query(
+        None, description="Points as 'x1,y1,l1;x2,y2,l2' (coords 0-1)"
+    ),
+    boxes: Optional[str] = Query(
+        None, description="Boxes as 'x1,y1,x2,y2;...' (coords 0-1)"
+    ),
     return_json: bool = Query(False, description="Return JSON instead of image"),
 ):
     """
@@ -633,15 +713,15 @@ async def segment_with_point(
 
         # Load image
         image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
         image_np = np.array(image)
         h, w = image_np.shape[:2]
 
         # Parse prompts
         point_list = []
         if points:
-            for p in points.split(';'):
-                parts = p.strip().split(',')
+            for p in points.split(";"):
+                parts = p.strip().split(",")
                 if len(parts) >= 2:
                     x, y = float(parts[0]), float(parts[1])
                     label = int(parts[2]) if len(parts) > 2 else 1
@@ -661,17 +741,21 @@ async def segment_with_point(
         scores = result["scores"]
         inference_time = result["inference_time_ms"]
 
-        num_detections = len(scores) if hasattr(scores, '__len__') else 0
+        num_detections = len(scores) if hasattr(scores, "__len__") else 0
 
         if return_json:
             detections = []
             for i in range(num_detections):
                 mask_area = int(masks[i].sum()) if i < len(masks) else 0
-                detections.append(DetectionResult(
-                    bbox=result_boxes[i].tolist() if i < len(result_boxes) else [0, 0, 0, 0],
-                    score=float(scores[i]) if i < len(scores) else 0.0,
-                    mask_area=mask_area,
-                ))
+                detections.append(
+                    DetectionResult(
+                        bbox=result_boxes[i].tolist()
+                        if i < len(result_boxes)
+                        else [0, 0, 0, 0],
+                        score=float(scores[i]) if i < len(scores) else 0.0,
+                        mask_area=mask_area,
+                    )
+                )
 
             return SegmentResponse(
                 success=True,
@@ -706,7 +790,7 @@ async def segment_with_point(
             # Return as PNG
             result_image = Image.fromarray(overlay)
             img_buffer = io.BytesIO()
-            result_image.save(img_buffer, format='PNG')
+            result_image.save(img_buffer, format="PNG")
             img_buffer.seek(0)
 
             return StreamingResponse(
@@ -715,7 +799,7 @@ async def segment_with_point(
                 headers={
                     "X-Inference-Time-Ms": str(inference_time),
                     "X-Num-Detections": str(num_detections),
-                }
+                },
             )
 
     except Exception as e:
@@ -727,12 +811,13 @@ async def segment_with_point(
 # Main Entry Point
 # ============================================================================
 
+
 def main():
     """Run the FastAPI server."""
     import uvicorn
 
-    host = os.environ.get('HOST', '0.0.0.0')
-    port = int(os.environ.get('PORT', '8000'))
+    host = os.environ.get("HOST", "0.0.0.0")
+    port = int(os.environ.get("PORT", "8000"))
 
     uvicorn.run(
         "sam3_deepstream.api.server:app",

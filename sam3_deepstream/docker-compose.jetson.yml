@@ -39,7 +39,10 @@ services:
       - SAM3_ALIGNMENT_TUNING=${SAM3_ALIGNMENT_TUNING:-1}
       # TensorRT configuration
       - SAM3_USE_TRT=${SAM3_USE_TRT:-0}
-      - SAM3_ENGINE_DIR=/workspace/engines
+      - SAM3_ENGINE_DIR=/workspace/sam3_deepstream/engines
+      # Mixed precision configuration (Jetson-safe defaults)
+      - SAM3_USE_AUTOCAST=${SAM3_USE_AUTOCAST:-1}
+      - SAM3_AUTOCAST_DTYPE=${SAM3_AUTOCAST_DTYPE:-float16}
       # Output directory for saved results
       - SAM3_OUTPUT_DIR=/workspace/outputs
 
@@ -66,20 +69,41 @@ services:
       # - ${HOME}/.cache/perception_encoder:/workspace/pe_weights:ro
 
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')",
+        ]
       interval: 30s
       timeout: 15s
       retries: 5
-      start_period: 120s  # TRT engine loading takes time
+      start_period: 120s # TRT engine loading takes time
+
+    develop:
+      watch:
+        - action: sync
+          path: ./sam3_deepstream
+          target: /workspace/sam3_deepstream
+          ignore:
+            - "**/__pycache__/**"
+            - "**/*.pyc"
+            - "**/engines/**" # Ignore engine changes (built separately)
+            - "**/.cache/**" # Ignore cache changes
+            - "./outputs/**" # Ignore output changes
+
+        - action: rebuild
+          path: ./uv.lock
 
     # Memory limits for Jetson AGX Orin (32GB/64GB unified memory)
     # PE backbone requires additional memory for alignment tuning layers
     deploy:
       resources:
         limits:
-          memory: 28g  # Increased from 24g for PE backbone
+          memory: 28g # Increased from 24g for PE backbone
         reservations:
-          memory: 10g  # Increased from 8g for PE backbone
+          memory: 10g # Increased from 8g for PE backbone
 
 volumes:
   sam3-cuda-cache:

@@ -65,6 +65,8 @@ services:
       - sam3-cuda-cache:/workspace/.cuda_cache
       # Mount test data for running tests
       - ../test_data:/workspace/test_data:ro
+      # /dev/shm
+      - /dev/shm:/dev/shm
       # Optional: PE weights for fine-tuning (if using separate PE checkpoint)
       # - ${HOME}/.cache/perception_encoder:/workspace/pe_weights:ro
 

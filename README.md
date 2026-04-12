@@ -100,17 +100,16 @@ uv venv --system-site-packages --python python3.10 # use system python
 source .venv/bin/activate
 ```
 
+- Installing `sam3-deepstream` dependencies
+```sh
+uv sync --package sam3-deepstream --no-install-package torch --no-install-package torchvision --no-install-package triton
+```
+
 - Installing `torch` and `torchvision` from the jetson pypi repository
 ```sh
 uv pip install --no-cache-dir torch --index-url=https://pypi.jetson-ai-lab.io/jp6/cu126
 uv pip install --no-cache-dir torchvision --index-url=https://pypi.jetson-ai-lab.io/jp6/cu126
 ```
-
-- Install the remaining dependencies
-```sh
-uv sync --package sam3-deepstream --no-install-package torch --no-install-package torchvision --no-install-package triton
-```
-
 
 ## Configuration
 

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class TrackedObject:
     """Represents a tracked object across frames."""
+
     object_id: int
     mask: np.ndarray
     box: Tuple[float, float, float, float]  # x1, y1, x2, y2
@@ -26,6 +27,7 @@ class TrackedObject:
 @dataclass
 class FrameResult:
     """Results for a single frame."""
+
     frame_idx: int
     is_keyframe: bool
     masks: List[np.ndarray]
@@ -78,6 +80,15 @@ class KeyframeProcessor:
         # Mask propagator (set externally)
         self._propagator = None
 
+    @staticmethod
+    def _to_numpy_safe(value):
+        """Convert tensors to numpy with dtype normalization for BF16 safety."""
+        if not torch.is_tensor(value):
+            return value
+        if value.dtype in (torch.bfloat16, torch.float16):
+            value = value.float()
+        return value.detach().cpu().numpy()
+
     def set_propagator(self, propagator) -> None:
         """Set mask propagation module."""
         self._propagator = propagator
@@ -97,7 +108,7 @@ class KeyframeProcessor:
         Returns:
             FrameResult with masks and tracking info
         """
-        is_keyframe = (self._frame_idx % self.keyframe_interval == 0)
+        is_keyframe = self._frame_idx % self.keyframe_interval == 0
 
         if is_keyframe:
             result = self._process_keyframe(frame, prompts)
@@ -190,7 +201,7 @@ class KeyframeProcessor:
 
         for prompt in prompts:
             mask, score = self.decoder_fn(embeddings, prompt)
-            masks.append(mask.cpu().numpy())
+            masks.append(self._to_numpy_safe(mask))
             scores.append(score.item())
 
         return masks, scores
@@ -205,10 +216,10 @@ class KeyframeProcessor:
 
         for obj in self._tracked_objects.values():
             # Use object's box as prompt
-            prompt = {"box": obj.box}
+            prompt = {'box': obj.box}
             if self.decoder_fn:
                 mask, score = self.decoder_fn(embeddings, prompt)
-                masks.append(mask.cpu().numpy())
+                masks.append(self._to_numpy_safe(mask))
                 scores.append(score.item())
 
         return masks, scores

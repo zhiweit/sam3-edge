@@ -1,0 +1,91 @@
+# SAM3 Jetson Development Environment
+#
+# Spins up a dev container with Jupyter Lab + editable source mounts for
+# experimenting with SAM3 on a Jetson AGX Orin 64GB.
+#
+# Usage:
+#   docker compose -f docker-compose.jetson.dev.yml up -d
+#   docker compose -f docker-compose.jetson.dev.yml logs -f sam3-dev   # get Jupyter URL
+#   docker compose -f docker-compose.jetson.dev.yml exec sam3-dev bash
+#
+# Jupyter Lab:  http://<jetson-ip>:8888  (default token: sam3dev)
+# API (opt-in): http://<jetson-ip>:8000  (start manually inside the container)
+
+services:
+  sam3-dev:
+    build:
+      context: ..
+      dockerfile: sam3_deepstream/Dockerfile.jetson.dev
+    image: sam3-edge:jetson-dev
+    container_name: sam3-dev
+
+    runtime: nvidia
+    privileged: true
+
+    user: "1000:1000"
+
+    # Keep stdin open so `docker attach` / `exec` feel natural
+    stdin_open: true
+    tty: true
+
+    ports:
+      - "8888:8888" # Jupyter Lab
+      - "8000:8000" # FastAPI (when you launch it manually)
+
+    environment:
+      # Jetson CUDA / TRT caches
+      - CUDA_CACHE_DISABLE=0
+      - CUDA_CACHE_PATH=/workspace/.cuda_cache
+      - TRT_ENGINE_CACHE_ENABLE=1
+      - PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+      - PYTORCH_CUDA_MEMORY_FRACTION=0.8
+
+      # SAM3 runtime knobs (override at `docker compose up` time via .env)
+      - SAM3_USE_PE_BACKBONE=${SAM3_USE_PE_BACKBONE:-0}
+      - SAM3_ALIGNMENT_TUNING=${SAM3_ALIGNMENT_TUNING:-1}
+      - SAM3_USE_TRT=${SAM3_USE_TRT:-0}
+      - SAM3_ENGINE_DIR=/workspace/sam3_deepstream/engines
+      - SAM3_USE_AUTOCAST=${SAM3_USE_AUTOCAST:-1}
+      - SAM3_AUTOCAST_DTYPE=${SAM3_AUTOCAST_DTYPE:-float16}
+      - SAM3_OUTPUT_DIR=/workspace/outputs
+
+      # Jupyter
+      - JUPYTER_PORT=8888
+      - JUPYTER_TOKEN=${JUPYTER_TOKEN:-sam3dev}
+
+    volumes:
+      # Live-reload source (editable installs pick these up automatically)
+      - ./sam3_deepstream:/workspace/sam3_deepstream
+      - ../sam3:/workspace/sam3
+      - ./pyproject.toml:/workspace/pyproject.toml:ro
+
+      # Engines, checkpoints, test data (read-only)
+      - ${HOME}/.cache/sam3_deepstream/engines:/workspace/engines:ro
+      - ${HOME}/.cache/sam3_deepstream/checkpoints:/workspace/checkpoints:ro
+      - ../test_data:/workspace/test_data:ro
+
+      # Notebooks + scratch space (read/write, persisted on host)
+      - ./notebooks:/workspace/notebooks
+      - ./data:/workspace/data
+      - ./outputs:/workspace/outputs
+
+      # CUDA kernel cache (named volume, persists across container rebuilds)
+      - sam3-cuda-cache:/workspace/.cuda_cache
+
+      # Shared memory for DataLoader workers
+      - /dev/shm:/dev/shm
+
+    # Jetson AGX Orin 64GB: allow generous headroom for experimentation
+    deploy:
+      resources:
+        limits:
+          memory: 48g
+        reservations:
+          memory: 12g
+
+    # Don't die on crashes during interactive dev
+    restart: unless-stopped
+
+volumes:
+  sam3-cuda-cache:
+    driver: local

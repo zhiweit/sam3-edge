@@ -1,0 +1,129 @@
+# SAM3 Inference API - Jetson Development Container
+#
+# Development image for experimenting with SAM3 on Jetson AGX Orin (JetPack 6.x).
+# Differences from Dockerfile.jetson:
+#   - Editable installs (pip install -e) so host code edits are live
+#   - Jupyter Lab for notebook-based experimentation
+#   - Extra dev/plotting packages (matplotlib, ipywidgets, jupyterlab)
+#   - Source directories are expected to be bind-mounted (not baked in)
+#
+# Build:
+#   docker compose -f sam3_deepstream/docker-compose.jetson.dev.yml build
+#
+# Run:
+#   docker compose -f sam3_deepstream/docker-compose.jetson.dev.yml up -d
+#
+# Access Jupyter:
+#   http://<jetson-ip>:8888  (token printed in container logs)
+
+ARG L4T_VERSION=r36.4.0
+FROM dustynv/l4t-pytorch:${L4T_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+WORKDIR /workspace
+
+RUN useradd -m -u 1000 -s /bin/bash jupyter && \
+    chown -R jupyter:jupyter /workspace
+
+USER jupyter  
+
+
+# System dependencies (add git/curl for dev convenience)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libsqlite3-dev \
+    git \
+    curl \
+    vim \
+    tmux \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy constraints file (prevents numpy 2.x)
+COPY sam3_deepstream/constraints.txt /workspace/
+
+# Runtime dependencies (same set as production image)
+RUN pip3 install --no-cache-dir --index-url https://pypi.org/simple/ \
+    -c /workspace/constraints.txt \
+    fastapi>=0.104.0 \
+    "uvicorn[standard]>=0.24.0" \
+    python-multipart>=0.0.6 \
+    pydantic>=2.0.0 \
+    pillow>=10.0.0 \
+    aiofiles>=23.0.0 \
+    aiosqlite>=0.19.0 \
+    faiss-cpu>=1.7.2 \
+    einops>=0.7.0 \
+    triton>=2.1.0 \
+    decord2>=3.0.0 \
+    pycocotools>=2.0.0
+
+# Dev / notebook dependencies
+RUN pip3 install --no-cache-dir --index-url https://pypi.org/simple/ \
+    -c /workspace/constraints.txt \
+    jupyterlab>=4.0.0 \
+    notebook>=7.0.0 \
+    ipywidgets>=8.0.0 \
+    matplotlib>=3.7.0 \
+    seaborn>=0.13.0 \
+    tqdm>=4.65.0 \
+    pytest>=7.0.0 \
+    pytest-asyncio>=0.21.0 \
+    requests>=2.28.0 \
+    ipython>=8.0.0
+
+# Install sam3 and sam3_deepstream in editable mode against bind-mounted source.
+# The actual code lives on the host and is mounted at runtime; this step only
+# registers the packages so imports resolve. We copy pyproject files temporarily
+# to perform the editable install, then expect the full source to be mounted.
+COPY sam3 /workspace/sam3
+RUN pip3 install --no-cache-dir --index-url https://pypi.org/simple/ \
+    -c /workspace/constraints.txt \
+    -e /workspace/sam3
+
+COPY sam3_deepstream/sam3_deepstream /workspace/sam3_deepstream
+COPY sam3_deepstream/pyproject.toml /workspace/pyproject.toml
+RUN pip3 install --no-cache-dir --index-url https://pypi.org/simple/ \
+    -c /workspace/constraints.txt \
+    -e /workspace
+
+RUN mkdir -p /workspace/engines /workspace/uploads /workspace/db /workspace/notebooks
+
+# Environment configuration (mirrors production Dockerfile.jetson)
+ENV SAM3_ENCODER_ENGINE=/workspace/engines/sam3_encoder.engine
+ENV SAM3_DECODER_ENGINE=/workspace/engines/sam3_decoder.engine
+ENV SAM3_CHECKPOINT=/workspace/checkpoints/sam3.pt
+ENV CUDA_DEVICE=0
+ENV HOST=0.0.0.0
+ENV PORT=8000
+ENV SAM3_USE_AUTOCAST=1
+ENV SAM3_AUTOCAST_DTYPE=float16
+
+ENV SAM3_USE_PE_BACKBONE=0
+ENV SAM3_PE_ENCODER_ENGINE=/workspace/engines/pe_encoder_fp16.engine
+ENV SAM3_ALIGNMENT_TUNING=1
+
+ENV CUDA_CACHE_DISABLE=0
+ENV CUDA_CACHE_PATH=/workspace/.cuda_cache
+ENV TRT_ENGINE_CACHE_ENABLE=1
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+
+# Jupyter configuration
+ENV JUPYTER_PORT=8888
+ENV JUPYTER_ALLOW_ROOT=1
+
+EXPOSE 8000 8888
+
+
+# Default: launch Jupyter Lab. Override with `docker compose run` to get a shell
+# or to start the API server instead (`python3 -m sam3_deepstream.api.server`).
+CMD ["sh", "-c", "jupyter lab \
+    --ip=0.0.0.0 \
+    --port=${JUPYTER_PORT} \
+    --no-browser \
+    --allow-root \
+    --ServerApp.token=${JUPYTER_TOKEN} \
+    --ServerApp.root_dir=/workspace \
+    --ServerApp.allow_origin='*'"]
